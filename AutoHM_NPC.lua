@@ -33,6 +33,10 @@ local NPC_FULL_SCAN_INTERVAL= 2.0    -- Escaneo completo de seguridad cada X seg
 local IGNORE_ANCHORED_NPCS  = true   -- Ignora NPCs anclados (estatuas/maniquíes/decoración)
 local RESPECT_FRIENDLY_ATTR = true   -- Si el NPC tiene atributo Friendly=true o Hostile=false, es aliado
 local TARGET_STICKINESS     = 0.75   -- No cambia de objetivo a menos que el nuevo esté 25% más cerca
+-- === Detección mejorada / anti-team ===
+local REQUIRE_LINE_OF_SIGHT = true   -- Solo persigue objetivos VISIBLES (si se esconden tras paredes, deja de seguirlo automáticamente)
+local ANTI_TEAM             = true   -- No ataca compañeros de equipo (Teams, TeamColor, atributos, leaderstats)
+local LOS_GRACE             = 0.6    -- Seguir persiguiendo la última posición X seg después de perder visión
 -- Tags comunes de CollectionService que usan los juegos para marcar enemigos
 local NPC_TAGS = {"Enemy","NPC","Bot","Zombie","Mob","Hostile","Target","Kill","AI","Monster","EnemyCharacter","Npc","Enemigo"}
 -- Nombres de NPC que se ignoran completamente (minúsculas, coincidencia parcial)
@@ -231,6 +235,7 @@ local stuckCheckPos = nil
 local stuckCheckTime = 0
 local allyCount = 0
 local npcAliveCount = 0
+local targetHidden = false   -- true si hay objetivos pero todos escondidos tras paredes
 local serverHasTeams = false
 local ignoreList = {}   -- [userId] = true, aliados manuales (jugadores, tecla F)
 local allyNpcs = {}     -- [model] = true, aliados manuales (NPCs, tecla F)
@@ -524,6 +529,7 @@ end
 local function isTeammate(otherPlayer)
 	if otherPlayer == player then return true end
 	if ignoreList[otherPlayer.UserId] then return true end
+	if not ANTI_TEAM then return false end
 	if player.Team and otherPlayer.Team and player.Team == otherPlayer.Team then
 		return true
 	end
@@ -570,15 +576,29 @@ end
 -- ============================================================
 
 local function hasLineOfSight(fromPos, toPos, characterToIgnore)
-	local raycastParams = RaycastParams.new()
-	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = {player.Character, characterToIgnore}
-	raycastParams.IgnoreWater = true
-	local result = Workspace:Raycast(fromPos, toPos - fromPos, raycastParams)
-	if result and not result.Instance:IsDescendantOf(characterToIgnore) then
-		return false
+	if not REQUIRE_LINE_OF_SIGHT then return true end
+	local ignoreList = {player.Character, characterToIgnore}
+	-- Método moderno (Raycast) con fallback de enum y pcall
+	local ok, result = pcall(function()
+		local rp = RaycastParams.new()
+		rp.FilterType = Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Blacklist
+		rp.FilterDescendantsInstances = ignoreList
+		rp.IgnoreWater = true
+		return Workspace:Raycast(fromPos, toPos - fromPos, rp)
+	end)
+	if ok then
+		if result and result.Instance and characterToIgnore and not result.Instance:IsDescendantOf(characterToIgnore) then
+			return false
+		end
+		return true
 	end
-	return true
+	-- Fallback antiguo (FindPartOnRay) si Raycast no está disponible
+	local ok2, hit = pcall(function()
+		local ray = Ray.new(fromPos, (toPos - fromPos))
+		return Workspace:FindPartOnRayWithIgnoreList(ray, ignoreList, false, true)
+	end)
+	if ok2 and hit then return false end
+	return true -- si todo falla, asumir visible para no romper la persecución
 end
 
 -- Búsqueda de objetivos (jugadores + NPCs)
@@ -686,6 +706,7 @@ task.spawn(function()
 
 		allyCount = allies
 		currentTarget = bestTarget
+		targetHidden = (not bestTarget and #candidates > 0)
 		if bestTarget then
 			lastKnownPos = bestTarget.Position
 			lastKnownTime = tick()
@@ -762,6 +783,10 @@ RunService.RenderStepped:Connect(function()
 		end
 	else
 		stuckCheckPos = nil
-		setStatus("Buscando... | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 200, 80))
+		if targetHidden then
+			setStatus("Objetivo oculto | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 160, 60))
+		else
+			setStatus("Buscando... | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 200, 80))
+		end
 	end
 end)
