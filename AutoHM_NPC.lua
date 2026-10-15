@@ -37,6 +37,9 @@ local TARGET_STICKINESS     = 0.75   -- No cambia de objetivo a menos que el nue
 local REQUIRE_LINE_OF_SIGHT = true   -- Solo persigue objetivos VISIBLES (si se esconden tras paredes, deja de seguirlo automáticamente)
 local ANTI_TEAM             = true   -- No ataca compañeros de equipo (Teams, TeamColor, atributos, leaderstats)
 local LOS_GRACE             = 0.6    -- Seguir persiguiendo la última posición X seg después de perder visión
+local CHASE_WHEN_HIDDEN     = false  -- false = cuando se esconde, TE DEVUELVE EL CONTROL (no persigue la última posición)
+local MAX_HEIGHT_DIFF       = 35     -- diferencia de altura máxima para perseguir (torres muy altas = no lo sigue)
+local SHOW_TARGET_NAME      = true   -- muestra el nombre del objetivo en la barra de estado
 -- Tags comunes de CollectionService que usan los juegos para marcar enemigos
 local NPC_TAGS = {"Enemy","NPC","Bot","Zombie","Mob","Hostile","Target","Kill","AI","Monster","EnemyCharacter","Npc","Enemigo"}
 -- Nombres de NPC que se ignoran completamente (minúsculas, coincidencia parcial)
@@ -236,6 +239,8 @@ local stuckCheckTime = 0
 local allyCount = 0
 local npcAliveCount = 0
 local targetHidden = false   -- true si hay objetivos pero todos escondidos tras paredes
+local currentTargetName = "" -- nombre del objetivo actual (para mostrarlo)
+local lastStatusText = ""    -- evita que la GUI parpadee/buguee al actualizar la misma texto
 local serverHasTeams = false
 local ignoreList = {}   -- [userId] = true, aliados manuales (jugadores, tecla F)
 local allyNpcs = {}     -- [model] = true, aliados manuales (NPCs, tecla F)
@@ -258,6 +263,8 @@ local function isMovingManually()
 end
 
 local function setStatus(text, color)
+	if text == lastStatusText then return end
+	lastStatusText = text
 	statusLabel.Text = text
 	statusLabel.TextColor3 = color or Color3.fromRGB(140, 145, 170)
 end
@@ -654,15 +661,20 @@ task.spawn(function()
 			end
 		end
 
-		-- 2. NPCs / bots
+		-- 2. NPCs / bots (filtro estricto: NO cuenta jugadores reales)
 		if INCLUDE_NPCS then
 			for _, n in pairs(npcCache) do
 				if n.root.Parent and n.humanoid and n.humanoid.Health > 0 then
-					aliveNpcs = aliveNpcs + 1
-					if isNpcAlly(n, myTeamIds) then
-						allies = allies + 1
+					-- Eliminar falsos positivos: personajes de jugadores reales
+					if Players:GetPlayerFromCharacter(n.model) or n.model == player.Character then
+						npcCache[n.model] = nil
 					else
-						table.insert(candidates, {root = n.root, model = n.model})
+						aliveNpcs = aliveNpcs + 1
+						if isNpcAlly(n, myTeamIds) then
+							allies = allies + 1
+						else
+							table.insert(candidates, {root = n.root, model = n.model})
+						end
 					end
 				else
 					-- limpiar muertos/destruidos
@@ -677,7 +689,7 @@ task.spawn(function()
 		for _, c in ipairs(candidates) do
 			local tr = c.root
 			local heightDiff = tr.Position.Y - myPos.Y
-			if heightDiff > -12 and heightDiff < 22 then
+			if heightDiff > -12 and heightDiff < MAX_HEIGHT_DIFF then
 				local dist = (myPos - tr.Position).Magnitude
 				if dist <= maxRange and hasLineOfSight(myPos + Vector3.new(0, 2, 0), tr.Position + Vector3.new(0, 2, 0), c.model) then
 					if dist < bestDist then
@@ -694,7 +706,7 @@ task.spawn(function()
 			if cHum and cHum.Health > 0 then
 				local cDist = (myPos - currentTarget.Position).Magnitude
 				local heightDiff = currentTarget.Position.Y - myPos.Y
-				if heightDiff > -12 and heightDiff < 22 and cDist <= maxRange
+				if heightDiff > -12 and heightDiff < MAX_HEIGHT_DIFF and cDist <= maxRange
 					and hasLineOfSight(myPos + Vector3.new(0, 2, 0), currentTarget.Position + Vector3.new(0, 2, 0), currentTarget.Parent) then
 					if bestTarget == nil or bestDist >= cDist * TARGET_STICKINESS then
 						bestTarget = currentTarget
@@ -707,6 +719,7 @@ task.spawn(function()
 		allyCount = allies
 		currentTarget = bestTarget
 		targetHidden = (not bestTarget and #candidates > 0)
+		currentTargetName = (bestTarget and bestTarget.Parent and bestTarget.Parent.Name) or ""
 		if bestTarget then
 			lastKnownPos = bestTarget.Position
 			lastKnownTime = tick()
@@ -743,7 +756,7 @@ RunService.RenderStepped:Connect(function()
 		if targetHum and targetHum.Health > 0 then
 			local targetPos = currentTarget.Position
 			local heightDiff = root.Position.Y - targetPos.Y
-			if heightDiff > -15 and heightDiff < 22 then
+			if heightDiff > -15 and heightDiff < MAX_HEIGHT_DIFF then
 				moveTarget = targetPos
 				lastKnownPos = targetPos
 				lastKnownTime = tick()
@@ -755,7 +768,7 @@ RunService.RenderStepped:Connect(function()
 		end
 	end
 
-	if not moveTarget and lastKnownPos and (tick() - lastKnownTime) < LAST_POS_TIMEOUT then
+	if not moveTarget and lastKnownPos and (CHASE_WHEN_HIDDEN or not targetHidden) and (tick() - lastKnownTime) < LAST_POS_TIMEOUT then
 		moveTarget = lastKnownPos
 	end
 
@@ -769,7 +782,8 @@ RunService.RenderStepped:Connect(function()
 		end
 
 		hum:MoveTo(moveTarget)
-		setStatus("Persiguiendo... | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(80, 230, 130))
+		local chaseLabel = (SHOW_TARGET_NAME and currentTargetName ~= "") and ("Persiguiendo: " .. currentTargetName .. " | ") or "Persiguiendo... | "
+		setStatus(chaseLabel .. "Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(80, 230, 130))
 
 		local now = tick()
 		if not stuckCheckPos then
