@@ -42,6 +42,7 @@ local MAX_HEIGHT_DIFF       = 35     -- diferencia de altura máxima para perseg
 local SHOW_TARGET_NAME      = true   -- muestra el nombre del objetivo en la barra de estado
 local CHASE_WALKSPEED       = 24     -- velocidad extra al perseguir (0 = no cambiar; default Roblox = 16). NO teleporta, solo corre más rápido.
 local IGNORE_BOMB_HOLDERS   = true   -- NO persigue a jugadores que llevan bomba (evita confusiones)
+local REQUIRE_BOMB          = true   -- true = solo funciona con bomba equipada; ponlo en false para probar sin bomba
 -- Tags comunes de CollectionService que usan los juegos para marcar enemigos
 local NPC_TAGS = {"Enemy","NPC","Bot","Zombie","Mob","Hostile","Target","Kill","AI","Monster","EnemyCharacter","Npc","Enemigo"}
 -- Nombres de NPC que se ignoran completamente (minúsculas, coincidencia parcial)
@@ -341,32 +342,26 @@ end
 
 -- Escaneo completo (de seguridad, cada pocos segundos) + tags de CollectionService
 local function fullNpcScan()
-	-- no limpiamos del todo para no perder los que añadieron los eventos;
-	-- marcamos y luego borramos los que ya no existen
 	local seen = {}
-	local function scan(parent, depth)
-		if depth > 8 then return end
-		for _, obj in ipairs(parent:GetChildren()) do
-			if obj:IsA("Model") then
-				local hum = obj:FindFirstChildOfClass("Humanoid")
-				local root = obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart
-				if hum and root then
-					if obj ~= player.Character and not Players:GetPlayerFromCharacter(obj) and not isNpcNameIgnored(obj.Name) then
+	-- Escaneo FIABLE: recorre TODOS los descendientes buscando Humanoids (atrapa bots/NPCs de cualquier estructura)
+	pcall(function()
+		for _, obj in ipairs(Workspace:GetDescendants()) do
+			if obj:IsA("Humanoid") then
+				local model = obj.Parent
+				if model and model:IsA("Model") then
+					local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+					if root and model ~= player.Character
+						and not Players:GetPlayerFromCharacter(model)
+						and not isNpcNameIgnored(model.Name) then
 						if not (IGNORE_ANCHORED_NPCS and root.Anchored) then
-							seen[obj] = true
-							npcCache[obj] = {model = obj, humanoid = hum, root = root}
+							seen[model] = true
+							npcCache[model] = {model = model, humanoid = obj, root = root}
 						end
 					end
-				else
-					scan(obj, depth + 1)
 				end
-			elseif obj:IsA("Folder") or obj:IsA("Configuration") then
-				scan(obj, depth + 1)
 			end
 		end
-	end
-	pcall(function() scan(Workspace, 0) end)
-
+	end)
 	-- Tags de CollectionService (muchos juegos marcan enemigos así)
 	for _, tag in ipairs(NPC_TAGS) do
 		local ok, tagged = pcall(function() return CollectionService:GetTagged(tag) end)
@@ -389,7 +384,6 @@ local function fullNpcScan()
 			end
 		end
 	end
-
 	-- Borrar de la cache los que ya no existen o no tienen raíz
 	for model, entry in pairs(npcCache) do
 		if not seen[model] then
@@ -399,6 +393,15 @@ local function fullNpcScan()
 		end
 	end
 end
+
+-- Escaneo INMEDIATO al iniciar + bucle independiente (detecta NPCs incluso sin bomba o sin activar)
+task.spawn(function()
+	fullNpcScan()
+	while gui.Parent do
+		task.wait(NPC_FULL_SCAN_INTERVAL)
+		fullNpcScan()
+	end
+end)
 
 -- Detección INSTANTÁNEA por eventos (no espera al escaneo periódico)
 Workspace.DescendantAdded:Connect(function(inst)
@@ -669,7 +672,7 @@ task.spawn(function()
 	while gui.Parent do
 		task.wait(0.04)
 		repeat
-		if not enabled or not hasBombEquipped() then
+		if not enabled or (REQUIRE_BOMB and not hasBombEquipped()) then
 			currentTarget = nil
 			break
 		end
@@ -788,7 +791,7 @@ end)
 
 -- Movimiento
 RunService.RenderStepped:Connect(function()
-	if not gui.Parent or not enabled or not hasBombEquipped() then return end
+	if not gui.Parent or not enabled or (REQUIRE_BOMB and not hasBombEquipped()) then return end
 
 	local char = player.Character
 	if not char then return end
