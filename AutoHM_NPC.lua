@@ -582,30 +582,41 @@ local function isNpcAlly(npcEntry, myTeamIds)
 end
 -- ============================================================
 
+-- Detección de paredes BRUTAL: 3 rayos (pies, pecho, cabeza) por objetivo.
+-- Si una pared bloquea TODAS las líneas, el objetivo está oculto → te devuelve el control.
 local function hasLineOfSight(fromPos, toPos, characterToIgnore)
 	if not REQUIRE_LINE_OF_SIGHT then return true end
 	local ignoreList = {player.Character, characterToIgnore}
-	-- Método moderno (Raycast) con fallback de enum y pcall
-	local ok, result = pcall(function()
-		local rp = RaycastParams.new()
-		rp.FilterType = Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Blacklist
-		rp.FilterDescendantsInstances = ignoreList
-		rp.IgnoreWater = true
-		return Workspace:Raycast(fromPos, toPos - fromPos, rp)
-	end)
-	if ok then
-		if result and result.Instance and characterToIgnore and not result.Instance:IsDescendantOf(characterToIgnore) then
-			return false
+	local offsets = {-1.5, 0, 2.5} -- pies, pecho, cabeza (relativo al +2 ya enviado)
+	local visibleCount = 0
+	for _, off in ipairs(offsets) do
+		local from = fromPos + Vector3.new(0, off, 0)
+		local to = toPos + Vector3.new(0, off, 0)
+		local dir = to - from
+		local blocked = false
+		-- Método moderno (Raycast) con fallback de enum y pcall
+		local ok, result = pcall(function()
+			local rp = RaycastParams.new()
+			rp.FilterType = Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Blacklist
+			rp.FilterDescendantsInstances = ignoreList
+			rp.IgnoreWater = true
+			return Workspace:Raycast(from, dir, rp)
+		end)
+		if ok then
+			if result and result.Instance and characterToIgnore and not result.Instance:IsDescendantOf(characterToIgnore) then
+				blocked = true
+			end
+		else
+			-- Fallback antiguo (FindPartOnRay) si Raycast no está disponible
+			local ok2, hit = pcall(function()
+				local ray = Ray.new(from, dir)
+				return Workspace:FindPartOnRayWithIgnoreList(ray, ignoreList, false, true)
+			end)
+			if ok2 and hit then blocked = true end
 		end
-		return true
+		if not blocked then visibleCount = visibleCount + 1 end
 	end
-	-- Fallback antiguo (FindPartOnRay) si Raycast no está disponible
-	local ok2, hit = pcall(function()
-		local ray = Ray.new(fromPos, (toPos - fromPos))
-		return Workspace:FindPartOnRayWithIgnoreList(ray, ignoreList, false, true)
-	end)
-	if ok2 and hit then return false end
-	return true -- si todo falla, asumir visible para no romper la persecución
+	return visibleCount >= 1 -- si al menos un punto es visible, lo consideramos visible
 end
 
 -- Búsqueda de objetivos (jugadores + NPCs)
@@ -798,7 +809,8 @@ RunService.RenderStepped:Connect(function()
 	else
 		stuckCheckPos = nil
 		if targetHidden then
-			setStatus("Objetivo oculto | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 160, 60))
+			hum:MoveTo(root.Position) -- frena en seco, te devuelve el control al instante
+			setStatus("Detrás de pared — control tuyo | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 140, 60))
 		else
 			setStatus("Buscando... | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 200, 80))
 		end
