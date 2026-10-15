@@ -5,6 +5,16 @@ local Workspace = game:GetService("Workspace")
 local UIS = game:GetService("UserInputService")
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
+-- Compatibilidad: si el executor no tiene la librería task (Lua 5.1), la recrea
+if not task then
+	local _u = table.unpack or unpack
+	task = {
+		spawn = function(f, ...) local a = {...}; spawn(function() f(_u(a)) end) end,
+		wait = function(t) return wait(t or 0) end,
+		defer = function(f, ...) local a = {...}; spawn(function() f(_u(a)) end) end,
+		delay = function(t, f) delay(t, f) end,
+	}
+end
 
 -- ====== CONFIGURACIÓN ======
 local TOGGLE_KEY         = Enum.KeyCode.Q   -- Activar/desactivar rápido
@@ -575,15 +585,16 @@ end
 task.spawn(function()
 	while gui.Parent do
 		task.wait(0.04)
+		repeat
 		if not enabled or not hasBombEquipped() then
 			currentTarget = nil
-			continue
+			break
 		end
 
 		local char = player.Character
-		if not char then continue end
+		if not char then break end
 		local root = char:FindFirstChild("HumanoidRootPart")
-		if not root then continue end
+		if not root then break end
 
 		-- Equipos reales?
 		local colors = {}
@@ -679,6 +690,7 @@ task.spawn(function()
 			lastKnownPos = bestTarget.Position
 			lastKnownTime = tick()
 		end
+		until true
 	end
 end)
 
