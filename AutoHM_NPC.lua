@@ -246,6 +246,7 @@ local currentTargetName = "" -- nombre del objetivo actual (para mostrarlo)
 local lastStatusText = ""    -- evita que la GUI parpadee/buguee al actualizar la misma texto
 local autoMoveStopped = false -- true cuando ya se canceló el movimiento automático (evita llamadas cada frame)
 local originalWalkSpeed = nil -- guarda la velocidad original para restaurarla cuando no persigue
+local losWorking = true       -- si el executor no soporta raycast, se pone a false y degrada sin romperse
 local serverHasTeams = false
 local ignoreList = {}   -- [userId] = true, aliados manuales (jugadores, tecla F)
 local allyNpcs = {}     -- [model] = true, aliados manuales (NPCs, tecla F)
@@ -630,41 +631,55 @@ local function isNpcAlly(npcEntry, myTeamIds)
 end
 -- ============================================================
 
--- Detección de paredes BRUTAL: 3 rayos (pies, pecho, cabeza) por objetivo.
--- Si una pared bloquea TODAS las líneas, el objetivo está oculto → te devuelve el control.
+-- Detección de paredes INTELIGENTE: 5 rayos (pies, rodillas, pecho, cuello, cabeza).
+-- Requiere al menos 2 de 5 visibles. Si una pared bloquea la mayoría, está oculto → control tuyo.
 local function hasLineOfSight(fromPos, toPos, characterToIgnore)
 	if not REQUIRE_LINE_OF_SIGHT then return true end
+	if not losWorking then return true end -- el executor no soporta raycast: asumir visible para no romper
 	local ignoreList = {player.Character, characterToIgnore}
-	local offsets = {-1.5, 0, 2.5} -- pies, pecho, cabeza (relativo al +2 ya enviado)
+	local offsets = {-2, -1, 0, 1.5, 3} -- pies, rodillas, pecho, cuello, cabeza (relativo al +2 enviado)
 	local visibleCount = 0
+	local raycastOk = false
 	for _, off in ipairs(offsets) do
 		local from = fromPos + Vector3.new(0, off, 0)
 		local to = toPos + Vector3.new(0, off, 0)
 		local dir = to - from
-		local blocked = false
-		-- Método moderno (Raycast) con fallback de enum y pcall
-		local ok, result = pcall(function()
-			local rp = RaycastParams.new()
-			rp.FilterType = Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Blacklist
-			rp.FilterDescendantsInstances = ignoreList
-			rp.IgnoreWater = true
-			return Workspace:Raycast(from, dir, rp)
-		end)
-		if ok then
-			if result and result.Instance and characterToIgnore and not result.Instance:IsDescendantOf(characterToIgnore) then
-				blocked = true
-			end
+		local dist = dir.Magnitude
+		if dist < 1 then
+			visibleCount = visibleCount + 1 -- está al lado, visible
 		else
-			-- Fallback antiguo (FindPartOnRay) si Raycast no está disponible
-			local ok2, hit = pcall(function()
-				local ray = Ray.new(from, dir)
-				return Workspace:FindPartOnRayWithIgnoreList(ray, ignoreList, false, true)
+			local rayDir = dir.Unit * (dist - 0.5) -- acortar para no golpear al objetivo
+			local blocked = false
+			local ok, result = pcall(function()
+				local rp = RaycastParams.new()
+				rp.FilterType = Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Blacklist
+				rp.FilterDescendantsInstances = ignoreList
+				rp.IgnoreWater = true
+				return Workspace:Raycast(from, rayDir, rp)
 			end)
-			if ok2 and hit then blocked = true end
+			if ok then
+				raycastOk = true
+				if result and result.Instance and characterToIgnore and not result.Instance:IsDescendantOf(characterToIgnore) then
+					local inst = result.Instance
+					local isWall = true
+					pcall(function() if inst.Transparency >= 0.95 or not inst.CanCollide then isWall = false end end)
+					if isWall then blocked = true end
+				end
+			else
+				local ok2, hit = pcall(function()
+					local ray = Ray.new(from, rayDir)
+					return Workspace:FindPartOnRayWithIgnoreList(ray, ignoreList, false, true)
+				end)
+				if ok2 then
+					raycastOk = true
+					if hit then blocked = true end
+				end
+			end
+			if not blocked then visibleCount = visibleCount + 1 end
 		end
-		if not blocked then visibleCount = visibleCount + 1 end
 	end
-	return visibleCount >= 1 -- si al menos un punto es visible, lo consideramos visible
+	if not raycastOk then losWorking = false; return true end -- no soporta raycast: degradar elegantemente
+	return visibleCount >= 2 -- al menos 2 de 5 puntos visibles para considerarlo NO oculto
 end
 
 -- Búsqueda de objetivos (jugadores + NPCs)
@@ -784,6 +799,8 @@ task.spawn(function()
 		if bestTarget then
 			lastKnownPos = bestTarget.Position
 			lastKnownTime = tick()
+		elseif targetHidden then
+			lastKnownPos = nil -- borra la última posición: NO persigue a quien se esconde
 		end
 		until true
 	end
