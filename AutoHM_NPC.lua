@@ -41,6 +41,7 @@ local CHASE_WHEN_HIDDEN     = false  -- false = cuando se esconde, TE DEVUELVE E
 local MAX_HEIGHT_DIFF       = 35     -- diferencia de altura máxima para perseguir (torres muy altas = no lo sigue)
 local SHOW_TARGET_NAME      = true   -- muestra el nombre del objetivo en la barra de estado
 local CHASE_WALKSPEED       = 24     -- velocidad extra al perseguir (0 = no cambiar; default Roblox = 16). NO teleporta, solo corre más rápido.
+local IGNORE_BOMB_HOLDERS   = true   -- NO persigue a jugadores que llevan bomba (evita confusiones)
 -- Tags comunes de CollectionService que usan los juegos para marcar enemigos
 local NPC_TAGS = {"Enemy","NPC","Bot","Zombie","Mob","Hostile","Target","Kill","AI","Monster","EnemyCharacter","Npc","Enemigo"}
 -- Nombres de NPC que se ignoran completamente (minúsculas, coincidencia parcial)
@@ -288,6 +289,15 @@ local function setEnabled(state)
 		lastKnownPos = nil
 		stuckUntil = 0
 		currentTarget = nil
+		-- Al desactivar: cancelar cualquier auto-move y restaurar velocidad
+		local ch = player.Character
+		if ch then
+			local h = ch:FindFirstChildOfClass("Humanoid")
+			if h then
+				h:Move(Vector3.new(0, 0, 0))
+				if originalWalkSpeed ~= nil then h.WalkSpeed = originalWalkSpeed; originalWalkSpeed = nil end
+			end
+		end
 		TweenService:Create(button, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(210, 45, 65)}):Play()
 		btnGrad.Color = ColorSequence.new({
 			ColorSequenceKeypoint.new(0, Color3.fromRGB(235, 60, 85)),
@@ -503,6 +513,30 @@ local function hasBombEquipped()
 	return false
 end
 
+-- Comprueba si un personaje (cualquiera) lleva bomba (equipada o en el backpack)
+local function characterHasBomb(char)
+	if not char then return false end
+	for _, item in ipairs(char:GetChildren()) do
+		if item:IsA("Tool") then
+			local nl = item.Name:lower()
+			if nl:find("bomb") or nl:find("time") or nl:find("bomba") then return true end
+		end
+	end
+	local plr = Players:GetPlayerFromCharacter(char)
+	if plr then
+		local bp = plr:FindFirstChildOfClass("Backpack")
+		if bp then
+			for _, item in ipairs(bp:GetChildren()) do
+				if item:IsA("Tool") then
+					local nl = item.Name:lower()
+					if nl:find("bomb") or nl:find("time") or nl:find("bomba") then return true end
+				end
+			end
+		end
+	end
+	return false
+end
+
 -- ============================================================
 -- ====== ANTI-TEAM ======
 -- ============================================================
@@ -678,7 +712,9 @@ task.spawn(function()
 				local tr = v.Character:FindFirstChild("HumanoidRootPart")
 				local hum = v.Character:FindFirstChild("Humanoid")
 				if tr and hum and hum.Health > 0 then
-					table.insert(candidates, {root = tr, model = v.Character})
+					if not (IGNORE_BOMB_HOLDERS and characterHasBomb(v.Character)) then
+						table.insert(candidates, {root = tr, model = v.Character})
+					end
 				end
 			end
 		end
@@ -762,6 +798,8 @@ RunService.RenderStepped:Connect(function()
 
 	if isMovingManually() then
 		stuckCheckPos = nil
+		hum:Move(Vector3.new(0, 0, 0)) -- cancela cualquier auto-move: CONTROL TOTAL para ti
+		if originalWalkSpeed ~= nil then hum.WalkSpeed = originalWalkSpeed; originalWalkSpeed = nil end
 		setStatus("Control manual", Color3.fromRGB(120, 180, 255))
 		return
 	end
