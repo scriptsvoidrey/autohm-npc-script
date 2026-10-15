@@ -241,6 +241,7 @@ local npcAliveCount = 0
 local targetHidden = false   -- true si hay objetivos pero todos escondidos tras paredes
 local currentTargetName = "" -- nombre del objetivo actual (para mostrarlo)
 local lastStatusText = ""    -- evita que la GUI parpadee/buguee al actualizar la misma texto
+local autoMoveStopped = false -- true cuando ya se canceló el movimiento automático (evita llamadas cada frame)
 local serverHasTeams = false
 local ignoreList = {}   -- [userId] = true, aliados manuales (jugadores, tecla F)
 local allyNpcs = {}     -- [model] = true, aliados manuales (NPCs, tecla F)
@@ -754,6 +755,16 @@ RunService.RenderStepped:Connect(function()
 		setStatus("Control manual", Color3.fromRGB(120, 180, 255))
 		return
 	end
+	-- SI EL OBJETIVO ESTÁ DETRÁS DE PARED: control TOTAL para ti, sin ninguna orden de movimiento
+	if targetHidden then
+		if not autoMoveStopped then
+			autoMoveStopped = true
+			hum:Move(Vector3.new(0, 0, 0)) -- cancela el auto-move de una sola vez
+		end
+		setStatus("Detrás de pared — control tuyo | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 140, 60))
+		return
+	end
+	autoMoveStopped = false
 
 	if tick() < stuckUntil then
 		setStatus("Atascado — maniobra tú", Color3.fromRGB(255, 140, 60))
@@ -808,11 +819,6 @@ RunService.RenderStepped:Connect(function()
 		end
 	else
 		stuckCheckPos = nil
-		if targetHidden then
-			hum:MoveTo(root.Position) -- frena en seco, te devuelve el control al instante
-			setStatus("Detrás de pared — control tuyo | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 140, 60))
-		else
-			setStatus("Buscando... | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 200, 80))
-		end
+		setStatus("Buscando... | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 200, 80))
 	end
 end)
