@@ -40,6 +40,7 @@ local LOS_GRACE             = 0.6    -- Seguir persiguiendo la última posición
 local CHASE_WHEN_HIDDEN     = false  -- false = cuando se esconde, TE DEVUELVE EL CONTROL (no persigue la última posición)
 local MAX_HEIGHT_DIFF       = 35     -- diferencia de altura máxima para perseguir (torres muy altas = no lo sigue)
 local SHOW_TARGET_NAME      = true   -- muestra el nombre del objetivo en la barra de estado
+local CHASE_WALKSPEED       = 24     -- velocidad extra al perseguir (0 = no cambiar; default Roblox = 16). NO teleporta, solo corre más rápido.
 -- Tags comunes de CollectionService que usan los juegos para marcar enemigos
 local NPC_TAGS = {"Enemy","NPC","Bot","Zombie","Mob","Hostile","Target","Kill","AI","Monster","EnemyCharacter","Npc","Enemigo"}
 -- Nombres de NPC que se ignoran completamente (minúsculas, coincidencia parcial)
@@ -242,6 +243,7 @@ local targetHidden = false   -- true si hay objetivos pero todos escondidos tras
 local currentTargetName = "" -- nombre del objetivo actual (para mostrarlo)
 local lastStatusText = ""    -- evita que la GUI parpadee/buguee al actualizar la misma texto
 local autoMoveStopped = false -- true cuando ya se canceló el movimiento automático (evita llamadas cada frame)
+local originalWalkSpeed = nil -- guarda la velocidad original para restaurarla cuando no persigue
 local serverHasTeams = false
 local ignoreList = {}   -- [userId] = true, aliados manuales (jugadores, tecla F)
 local allyNpcs = {}     -- [model] = true, aliados manuales (NPCs, tecla F)
@@ -504,10 +506,18 @@ end
 -- ============================================================
 -- ====== ANTI-TEAM ======
 -- ============================================================
-local teamKeywords = {"team", "faction", "squad", "crew", "gang", "side", "teamid", "group", "rank", "job", "role", "alliance", "company", "teamname", "clan", "party", "platoon", "force", "unit", "color", "band", "house"}
+local teamKeywords = {"team", "faction", "squad", "crew", "gang", "side", "teamid", "group", "rank", "job", "role", "alliance", "company", "teamname", "clan", "party", "platoon", "force", "unit", "color", "band", "house", "equipo", "banda", "organizacion", "organizacion", "cartel", "mafia", "faccion", "bando", "grupo", "pandilla", "liga", "ejercito", "reino", "nacion"}
 
 local function collectTeamIds(instance, ids)
 	if not instance then return end
+	-- Si es un jugador o un personaje, detectar el equipo por su nombre de Team
+	local okP, isPly = pcall(function() return instance:IsA("Player") end)
+	if okP and isPly and instance.Team then ids[instance.Team.Name] = true end
+	local okM, isMdl = pcall(function() return instance:IsA("Model") end)
+	if okM and isMdl then
+		local ply = Players:GetPlayerFromCharacter(instance)
+		if ply and ply.Team then ids[ply.Team.Name] = true end
+	end
 	for _, name in ipairs(teamKeywords) do
 		local ok, val = pcall(function() return instance:GetAttribute(name) end)
 		if ok and val ~= nil then
@@ -541,7 +551,7 @@ local function isTeammate(otherPlayer)
 	if player.Team and otherPlayer.Team and player.Team == otherPlayer.Team then
 		return true
 	end
-	if serverHasTeams and player.TeamColor == otherPlayer.TeamColor
+	if player.TeamColor == otherPlayer.TeamColor
 		and not player.Neutral and not otherPlayer.Neutral then
 		return true
 	end
@@ -761,6 +771,7 @@ RunService.RenderStepped:Connect(function()
 			autoMoveStopped = true
 			hum:Move(Vector3.new(0, 0, 0)) -- cancela el auto-move de una sola vez
 		end
+		if originalWalkSpeed ~= nil then hum.WalkSpeed = originalWalkSpeed; originalWalkSpeed = nil end
 		setStatus("Detrás de pared — control tuyo | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 140, 60))
 		return
 	end
@@ -804,6 +815,11 @@ RunService.RenderStepped:Connect(function()
 		end
 
 		hum:MoveTo(moveTarget)
+		-- Boost de velocidad al perseguir (sin teleport, solo WalkSpeed más alto)
+		if CHASE_WALKSPEED > 0 then
+			if originalWalkSpeed == nil then originalWalkSpeed = hum.WalkSpeed end
+			if hum.WalkSpeed ~= CHASE_WALKSPEED then hum.WalkSpeed = CHASE_WALKSPEED end
+		end
 		local chaseLabel = (SHOW_TARGET_NAME and currentTargetName ~= "") and ("Persiguiendo: " .. currentTargetName .. " | ") or "Persiguiendo... | "
 		setStatus(chaseLabel .. "Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(80, 230, 130))
 
@@ -819,6 +835,7 @@ RunService.RenderStepped:Connect(function()
 		end
 	else
 		stuckCheckPos = nil
+		if originalWalkSpeed ~= nil then hum.WalkSpeed = originalWalkSpeed; originalWalkSpeed = nil end
 		setStatus("Buscando... | Aliados: " .. allyCount .. " | NPCs: " .. npcAliveCount, Color3.fromRGB(255, 200, 80))
 	end
 end)
